@@ -26,13 +26,14 @@ When executing this skill, you MUST follow these rules strictly:
 
 ### Setup Flow (Sequential Gates)
 
-**Steps 1 and 2 are HARD GATES. Do NOT run any data queries until BOTH are completed.**
+**Steps 0, 1, and 2 are HARD GATES. Do NOT run any data queries until ALL THREE are completed.**
 
+- Step 0: Create dedicated Agent via suggest_agents → ⛔ STOP and wait for user confirmation
 - Step 1: Connect PostHog → validate with test query → ⛔ STOP and confirm with user
 - Step 2: Install Slack bot + pick channel → ⛔ STOP and confirm with user
-- ONLY after both gates pass → proceed to Step 3 (data queries) and beyond
+- ONLY after all three gates pass → proceed to Step 3 (data queries) and beyond
 
-If you skip Step 2 and jump straight to data queries after PostHog connects, you are violating this skill's execution contract.
+If you skip Step 0 and start setup inside the Project Agent, or skip Step 2 and jump straight to data queries, you are violating this skill's execution contract.
 
 ### Report Output Rules
 
@@ -42,6 +43,26 @@ If you skip Step 2 and jump straight to data queries after PostHog connects, you
 4. **No generic overviews** — Do NOT summarize the 5 modules into a single paragraph or percentage breakdown. Each module is a separate code-block table.
 5. **Empty data = keep header** — If a module returns zero rows (e.g., no paid traffic), still output the section header with "No data for this period". Do NOT skip or hide it.
 6. **Use exact SQL** — Copy the HogQL queries from Step 3 verbatim (substituting only the time window and domain variables). Do NOT rewrite, simplify, or "improve" them.
+
+---
+
+## Step 0: Create a Dedicated Agent (MUST DO FIRST)
+
+Before any setup or data queries, you MUST create a dedicated Agent for this workflow:
+
+1. Call `suggest_agents` with:
+   - `agent_name`: "Daily Traffic Report" (or user-specified name)
+   - `surface_type`: "chat"
+   - `agent_icon`: "TrendUp"
+   - `agent_description`: "Pulls yesterday's PostHog traffic data and posts a formatted 5-section report to Slack every morning"
+   - `cell_name`: "Traffic Report Setup"
+   - `cell_fingerprint`: "Daily PostHog traffic report — setup, configuration, and scheduled execution"
+
+2. ⛔ **STOP and wait** for the user to confirm Agent creation.
+
+3. Once confirmed, ALL subsequent steps (1–9) execute inside the new Agent — NOT inside the Project Agent.
+
+**Do NOT skip this step.** Do NOT begin PostHog connection or any other setup until the Agent is created and confirmed.
 
 ---
 
