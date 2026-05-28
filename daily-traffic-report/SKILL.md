@@ -11,11 +11,11 @@
 **Suggested Agent Name**: `Daily Traffic Report`
 
 **Agent Description**:
-Every morning at [time], automatically pull yesterday’s PostHog traffic data — overall PV/UV, traffic source ranking, and new vs. returning user split — and post the report to a Slack channel.
+Every morning at [time], automatically pull yesterday’s PostHog traffic data — paid channel breakdown, organic source ranking, new vs. returning users, and new signup sources — and post the report to a Slack channel.
 
 **End result**:
 - Fires daily at a user-specified time (user's local timezone)
-- Report covers: ① Overview (PV, UV, new signups) ② Traffic Sources Top 10 ③ New vs. Returning Users
+- Report covers: Overview line + ① Paid Channels (UTM) ② Organic Sources Top 10 ③ New vs. Returning Users ④ New Signups + Source
 - Delivered by the Agent's own Slack bot to a specified channel, and also visible in SureThing in-app chat
 
 ---
@@ -37,13 +37,13 @@ If you skip any gate and jump straight to data queries, you are violating this s
 
 ### Report Output Rules
 
-1. **Exactly 3 report modules** — The report MUST contain all 3 query modules defined in Step 3, in order. No more, no less.
-2. **No substitutions** — Do NOT replace these HogQL queries with PostHog UI insights, trends API, dashboard screenshots, or your own simplified summary.
-3. **No extra sections** — Do NOT add "Top Pages", "Most Active Events", "Session Count", "Bounce Rate", "Paid Channels", "Signup Attribution", or any metric not specified below.
-4. **No generic overviews** — Do NOT summarize the 3 modules into a single paragraph or percentage breakdown. Each module is a separate output.
-5. **Empty data = keep header** — If a module returns zero rows, still output the section header with "No data for this period". Do NOT skip or hide it.
-6. **Use exact SQL** — Copy the HogQL queries from Step 3 verbatim (substituting only the time window and domain variables). Do NOT rewrite, simplify, or "improve" them.
-7. **Code-block tables only** — Output each module as a Slack monospace code-block table. Do NOT output prose summaries or percentage-based overviews.
+1. **Exactly 5 output sections** — 1 overview line + 4 tables. No more, no less.
+2. **No sub-tables** — Do NOT break Paid Channels into sub-tables (no "Google Ads Keywords", no "Meta Ad Creatives"). ONE flat table per module.
+3. **No substitutions** — Do NOT replace these HogQL queries with PostHog UI insights, trends API, dashboard screenshots, or your own simplified summary.
+4. **No extra sections** — Do NOT add "Top Pages", "Most Active Events", "Session Count", "Bounce Rate", or any metric not specified below.
+5. **No generic overviews** — Do NOT summarize the modules into a single paragraph or percentage breakdown. Each module is a separate code-block table.
+6. **Empty data = keep header** — If a module returns zero rows (e.g., no paid traffic), still output the section header with "No data for this period". Do NOT skip or hide it.
+7. **Use exact SQL** — Copy the HogQL queries from Step 3 verbatim (substituting only the time window and domain variables). Do NOT rewrite, simplify, or "improve" them.
 
 ---
 
@@ -55,7 +55,7 @@ Before any setup or data queries, you MUST create a dedicated Agent for this wor
    - `agent_name`: "Daily Traffic Report" (or user-specified name)
    - `surface_type`: "chat"
    - `agent_icon`: "TrendUp"
-   - `agent_description`: "Pulls yesterday's PostHog traffic data and posts a formatted 3-section report to Slack every morning"
+   - `agent_description`: "Pulls yesterday's PostHog traffic data and posts a formatted report to Slack every morning"
    - `cell_name`: "Traffic Report Setup"
    - `cell_fingerprint`: "Daily PostHog traffic report — setup, configuration, and scheduled execution"
 
@@ -112,9 +112,6 @@ Before any setup or data queries, you MUST create a dedicated Agent for this wor
    - Ask the user which channel should receive the daily report
    - Record the `channel_id` and `integration_id`
 
-4. **Get the Channel ID** (if user provides a name instead of ID):
-   In Slack, right-click the channel name → Copy Link. The ID is the `C`-prefixed string at the end of the URL.
-
 ✅ **Gate 2 pass**: Tell user "Slack ready ✅ — now I'll generate your first sample report." Then proceed to Step 3.
 ⛔ **Do NOT run any PostHog data queries** until this gate passes.
 
@@ -134,7 +131,6 @@ Convert the user's local "yesterday" into a UTC time range. Read the user's time
 import sys
 from datetime import datetime, timedelta
 
-# Set UTC_OFFSET from user's timezone (e.g., Asia/Shanghai = 8, UTC = 0, America/New_York = -5)
 UTC_OFFSET = <UTC_OFFSET_FROM_USER_TIMEZONE>
 
 def get_window(offset_days=1):
@@ -155,7 +151,7 @@ def get_window(offset_days=1):
 All queries use `run_composio_tool` with `kind: HogQLQuery`:
 
 ```python
-PROJECT_ID = '<CONFIRMED_PROJECT_ID>'  # set after Step 1
+PROJECT_ID = '<CONFIRMED_PROJECT_ID>'
 
 def query(sql):
     data, error = run_composio_tool('POSTHOG_CREATE_QUERY_IN_PROJECT_BY_ID', {
@@ -182,57 +178,61 @@ UTM parameters in HogQL do **not** have a `$` prefix — unlike other auto-captu
 | Field type | Correct | Wrong |
 |---|---|---|
 | UTM params | `properties.utm_medium` | `properties.$utm_medium` ❌ |
+| UTM params | `properties.utm_source` | `properties.$utm_source` ❌ |
 | Auto-captured | `properties.$referring_domain` | `properties.referring_domain` ❌ |
+| Person initial UTM | `person.properties.$initial_utm_source` | `person.properties.initial_utm_source` ❌ |
 
-### The Three Core Queries
+### The Report Queries
 
-**① Overview (PV, UV, New Signups)**
-
-Pageviews and unique visitors:
+**Overview (1 summary line)**
 ```sql
 SELECT count() as pv, count(distinct distinct_id) as uv
 FROM events
 WHERE event = '$pageview'
   AND timestamp >= '{start_utc}' AND timestamp < '{end_utc}'
 ```
+Calculate pages/user = pv / uv in code.
+Output: "📊 Overview — PV {x,xxx} / UV {xxx} / Pages/user {x.x}"
 
-New signups (separate query):
-```sql
-SELECT count(distinct distinct_id) as new_signups
-FROM events
-WHERE event = '<SIGNUP_EVENT>'
-  AND timestamp >= '{start_utc}' AND timestamp < '{end_utc}'
-```
-
-Output: one summary line → "📊 Yesterday · PV {x,xxx} / UV {xxx} / New Signups {xx}"
-
-Replace `<SIGNUP_EVENT>` with the actual event name. Auto-detect by querying PostHog event definitions
-for common names: `user_created`, `sign_up`, `signed_up`, `user_registered`, `$signup`. Pick the one
-with the highest event count.
-
-**② Traffic Sources Top 10**
+**① Paid Channels (UTM-tagged)**
 ```sql
 SELECT
-    coalesce(
-        nullIf(properties.$referring_domain, ''),
-        '(direct)'
-    ) as source,
-    count() as pv,
+    properties.utm_source   as source,
+    properties.utm_medium   as medium,
+    properties.utm_campaign as campaign,
+    count()                 as pv,
     count(distinct distinct_id) as uv
 FROM events
 WHERE event = '$pageview'
   AND timestamp >= '{start_utc}' AND timestamp < '{end_utc}'
-  AND coalesce(nullIf(properties.$referring_domain, ''), '(direct)')
-      NOT LIKE '%<YOUR_PRODUCT_DOMAIN>%'
+  AND properties.utm_medium != ''
+  AND properties.utm_medium IS NOT NULL
+GROUP BY source, medium, campaign
+ORDER BY pv DESC
+LIMIT 20
+```
+Output: code-block table — Source | Medium | Campaign | PV | UV
+⚠️ ONE flat table only. Do NOT add sub-tables for Google Ads keywords or Meta creatives.
+
+**② Organic Sources Top 10 (no UTM)**
+```sql
+SELECT
+    properties.$referring_domain as source,
+    count()                      as pv,
+    count(distinct distinct_id)  as uv
+FROM events
+WHERE event = '$pageview'
+  AND timestamp >= '{start_utc}' AND timestamp < '{end_utc}'
+  AND (properties.utm_medium = '' OR properties.utm_medium IS NULL)
+  AND properties.$referring_domain != ''
+  AND properties.$referring_domain IS NOT NULL
+  AND properties.$referring_domain NOT LIKE '%<YOUR_PRODUCT_DOMAIN>%'
 GROUP BY source
 ORDER BY pv DESC
 LIMIT 10
 ```
-
-Replace `<YOUR_PRODUCT_DOMAIN>` with the product's actual domain to filter internal navigation.
-Infer from user's email domain (e.g., user is alice@surething.io → domain is surething.io).
-
-Output: code-block table with columns: Source | PV | UV
+Replace `<YOUR_PRODUCT_DOMAIN>` with the product's domain (infer from user's email).
+Output: code-block table — Source | PV | UV
 
 **③ New vs. Returning Users**
 ```sql
@@ -247,8 +247,23 @@ WHERE event = '$pageview'
 GROUP BY user_type
 ORDER BY uv DESC
 ```
+Output: code-block table — Type | PV | UV | Pages/user (calculated: pv/uv)
 
-Output: code-block table with columns: Type | PV | UV
+**④ New Signups Yesterday**
+```sql
+SELECT
+    coalesce(person.properties.$initial_utm_source, '(direct)') as source,
+    count(distinct distinct_id) as signups
+FROM events
+WHERE event = '<YOUR_SIGNUP_EVENT>'
+  AND timestamp >= '{start_utc}' AND timestamp < '{end_utc}'
+GROUP BY source
+ORDER BY signups DESC
+LIMIT 10
+```
+Replace `<YOUR_SIGNUP_EVENT>` with the actual event name. Auto-detect by querying PostHog event
+definitions for common names: `user_created`, `sign_up`, `signed_up`, `user_registered`, `$signup`.
+Output: header "🆕 New Signups Yesterday: {total}" + code-block table — Source | Signups
 
 ---
 
@@ -261,8 +276,7 @@ text. The correct approach is a monospace **code block** with aligned columns.
 
 ### CJK character width
 
-If the report contains Chinese, Japanese, or Korean characters, standard `str.ljust()` breaks
-alignment because CJK characters occupy 2 columns in monospace fonts. Use `unicodedata` to
+If the report contains Chinese, Japanese, or Korean characters, use `unicodedata` to
 calculate the true display width:
 
 ```python
@@ -279,10 +293,6 @@ def cw(s):
     return w
 
 def slack_table(headers, rows, right_cols=None):
-    """
-    Render a Slack code-block table with aligned columns.
-    right_cols: set of column indices to right-align (recommended for numbers).
-    """
     if right_cols is None:
         right_cols = set()
     all_data = [list(headers)] + [list(r) for r in rows]
@@ -308,20 +318,26 @@ def slack_table(headers, rows, right_cols=None):
 ### Formatting rules
 
 - ❌ Do not use `*bold*` or `_italic_` mrkdwn inside code blocks
-- ✅ Use plain text + emoji for visual structure (`📊 ① ② ③`)
+- ✅ Use plain text + emoji for visual structure (📊 ① ② ③ ④ 🆕)
 - ✅ Right-align numeric columns, left-align text columns
 
 ### Report structure
 
 ```
 Daily Traffic Report · {date_label}
-📊 Overview — PV {x,xxx} / UV {xxx} / New Signups {xx}
+📊 Overview — PV {x,xxx} / UV {xxx} / Pages/user {x.x}
 
-① Traffic Sources Top 10
+① Paid Channels (UTM-tagged)
+{slack_table: Source | Medium | Campaign | PV | UV}
+
+② Organic Sources Top 10 (no UTM)
 {slack_table: Source | PV | UV}
 
-② New vs. Returning Users
-{slack_table: Type | PV | UV}
+③ New vs. Returning Users
+{slack_table: Type | PV | UV | Pages/user}
+
+④ New Signups Yesterday: {n}
+{slack_table: Source | Signups}
 ```
 
 ---
@@ -331,7 +347,7 @@ Daily Traffic Report · {date_label}
 Before setting up the scheduled task, show the user the full formatted report in chat:
 
 - Date range covered
-- All 3 sections rendered as code-block tables
+- All 5 sections rendered as code-block tables
 - Ask: "Report look good? If yes, I'll set up the daily cron and start posting to your Slack channel."
 
 Only proceed to Step 6 when user explicitly approves.
@@ -346,8 +362,8 @@ Once user approves the sample:
 ```python
 slack_channels(
     operation      = "send",
-    channel_id     = "<CHANNEL_ID>",       # from Step 2
-    integration_id = "<INTEGRATION_ID>",   # from Step 2
+    channel_id     = "<CHANNEL_ID>",
+    integration_id = "<INTEGRATION_ID>",
     text           = "<report_body>"
 )
 ```
@@ -400,10 +416,23 @@ Manually trigger the task once immediately after creation, and confirm:
 
 ---
 
+## What’s Next
+
+After the daily report is running, suggest to the user:
+
+> Want more detailed ad attribution (keyword-level CPC, creative performance, ROAS)?
+> Connect these sources and I can build deeper reports:
+> - **Google Analytics (GA4)** — full conversion funnel attribution
+> - **Google Search Console** — organic keyword impressions and CTR
+> - **Meta Ads** — ad-level spend, creative performance, and ROAS
+
+---
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| All paid channel data is zero | Query uses `$utm_medium` instead of `utm_medium` | Remove the `$` prefix |
 | PostHog returns 401 | API key expired | Connected Apps → PostHog → disconnect and reconnect |
 | Slack shows raw pipe characters | Using Markdown table syntax | Switch to code block with aligned columns |
 | Report sent by the wrong bot | Wrong `integration_id` used | Call `slack_channels(list)` to confirm this Agent's `integration_id` |
