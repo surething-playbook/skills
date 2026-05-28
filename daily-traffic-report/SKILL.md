@@ -20,6 +20,19 @@ Every morning at [time], automatically pull yesterday's PostHog traffic data —
 
 ---
 
+## ⚠️ Execution Constraints (MUST READ)
+
+When executing this skill, you MUST follow these rules strictly:
+
+1. **Exactly 5 report modules** — The report MUST contain all 5 query modules defined in Step 2, in order. No more, no less.
+2. **No substitutions** — Do NOT replace these HogQL queries with PostHog UI insights, trends API, dashboard screenshots, or your own simplified summary.
+3. **No extra sections** — Do NOT add "Top Pages", "Most Active Events", "Session Count", "Bounce Rate", or any metric not specified below.
+4. **No generic overviews** — Do NOT summarize the 5 modules into a single paragraph or percentage breakdown. Each module is a separate code-block table.
+5. **Empty data = keep header** — If a module returns zero rows (e.g., no paid traffic), still output the section header with "No data for this period". Do NOT skip or hide it.
+6. **Use exact SQL** — Copy the HogQL queries from Step 2 verbatim (substituting only the time window and domain variables). Do NOT rewrite, simplify, or "improve" them.
+
+---
+
 ## Step 1: Connect PostHog
 
 **Do not ask the user for a Project ID.** Connect first, then discover projects automatically.
@@ -157,10 +170,12 @@ FROM events
 WHERE event = '$pageview'
   AND timestamp >= '{start_utc}' AND timestamp < '{end_utc}'
   AND (properties.utm_medium = '' OR properties.utm_medium IS NULL)
+  AND properties.$referring_domain != ''
+  AND properties.$referring_domain IS NOT NULL
   AND properties.$referring_domain NOT LIKE '%<YOUR_PRODUCT_DOMAIN>%'
 GROUP BY referring_domain
 ORDER BY pv DESC
-LIMIT 20
+LIMIT 10
 ```
 
 Replace `<YOUR_PRODUCT_DOMAIN>` with the product's actual domain to filter internal navigation.
@@ -182,8 +197,8 @@ ORDER BY uv DESC
 **⑤ New Signup Source Breakdown**
 ```sql
 SELECT
-    coalesce(person.properties.$initial_utm_source, '') as utm_source,
-    coalesce(person.properties.$initial_utm_medium, '') as utm_medium,
+    coalesce(person.properties.$initial_utm_source, '(direct)') as utm_source,
+    coalesce(person.properties.$initial_utm_medium, '(none)')   as utm_medium,
     count(distinct distinct_id) as registrations
 FROM events
 WHERE event = '<YOUR_SIGNUP_EVENT>'
