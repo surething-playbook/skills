@@ -24,16 +24,28 @@ Every morning at [time], automatically pull yesterday's PostHog traffic data —
 
 When executing this skill, you MUST follow these rules strictly:
 
-1. **Exactly 5 report modules** — The report MUST contain all 5 query modules defined in Step 2, in order. No more, no less.
+### Setup Flow (Sequential Gates)
+
+**Steps 1 and 2 are HARD GATES. Do NOT run any data queries until BOTH are completed.**
+
+- Step 1: Connect PostHog → validate with test query → ⛔ STOP and confirm with user
+- Step 2: Install Slack bot + pick channel → ⛔ STOP and confirm with user
+- ONLY after both gates pass → proceed to Step 3 (data queries) and beyond
+
+If you skip Step 2 and jump straight to data queries after PostHog connects, you are violating this skill's execution contract.
+
+### Report Output Rules
+
+1. **Exactly 5 report modules** — The report MUST contain all 5 query modules defined in Step 3, in order. No more, no less.
 2. **No substitutions** — Do NOT replace these HogQL queries with PostHog UI insights, trends API, dashboard screenshots, or your own simplified summary.
 3. **No extra sections** — Do NOT add "Top Pages", "Most Active Events", "Session Count", "Bounce Rate", or any metric not specified below.
 4. **No generic overviews** — Do NOT summarize the 5 modules into a single paragraph or percentage breakdown. Each module is a separate code-block table.
 5. **Empty data = keep header** — If a module returns zero rows (e.g., no paid traffic), still output the section header with "No data for this period". Do NOT skip or hide it.
-6. **Use exact SQL** — Copy the HogQL queries from Step 2 verbatim (substituting only the time window and domain variables). Do NOT rewrite, simplify, or "improve" them.
+6. **Use exact SQL** — Copy the HogQL queries from Step 3 verbatim (substituting only the time window and domain variables). Do NOT rewrite, simplify, or "improve" them.
 
 ---
 
-## Step 1: Connect PostHog
+## Step 1: Connect PostHog (GATE 1 — must complete before proceeding)
 
 **Do not ask the user for a Project ID.** Connect first, then discover projects automatically.
 
@@ -57,9 +69,36 @@ When executing this skill, you MUST follow these rules strictly:
 
 5. Record the confirmed `project_id` for use in all subsequent queries.
 
+✅ **Gate 1 pass**: Tell user "PostHog connected ✅" then proceed to Step 2.
+⛔ **Do NOT proceed** to any data queries until this gate passes.
+
 ---
 
-## Step 2: Write the Data Script
+## Step 2: Install Slack Bot + Pick Channel (GATE 2 — must complete before data queries)
+
+> ⚠️ Each SureThing Agent has its own dedicated Slack bot. You **must** use this Agent's bot to
+> send the report — not a bot from another Agent or Project.
+
+1. Check if the Agent's Slack bot is installed by calling `slack_channels(operation="list")`.
+
+2. **If NOT installed** (NO_CONNECTED_SLACK_BOT error):
+   - Tell the user: "To deliver reports to Slack, I need my Slack bot installed. Go to: project right panel → Agents tab → find this agent → click 'Add to Slack'."
+   - ⛔ **STOP HERE** and wait for the user to confirm the bot is installed.
+
+3. **Once bot is confirmed**:
+   - List available channels the bot has joined
+   - Ask the user which channel should receive the daily report
+   - Record the `channel_id` and `integration_id`
+
+4. **Get the Channel ID** (if user provides a name instead of ID):
+   In Slack, right-click the channel name → Copy Link. The ID is the `C`-prefixed string at the end of the URL.
+
+✅ **Gate 2 pass**: Tell user "Slack ready ✅ — now I'll generate your first sample report." Then proceed to Step 3.
+⛔ **Do NOT run any PostHog data queries** until this gate passes.
+
+---
+
+## Step 3: Write the Data Script
 
 Save the script to `scripts/daily_traffic_report.py`. It accepts one argument `offset_days`
 (default `1` = yesterday, `2` = two days ago).
@@ -213,7 +252,7 @@ Replace `<YOUR_SIGNUP_EVENT>` with the actual event name used in PostHog (e.g. `
 
 ---
 
-## Step 3: Slack Formatting
+## Step 4: Slack Formatting
 
 ### Why not Markdown tables?
 
@@ -300,7 +339,7 @@ Meta Ad Creatives Top 10
 
 ---
 
-## Step 4: Run Once Manually to Verify
+## Step 5: Run Once Manually to Verify
 
 Before setting up the scheduled task, run the script manually:
 
@@ -319,35 +358,19 @@ If paid data is all zeros → first check that `utm_medium` has no `$` prefix in
 
 ---
 
-## Step 5: Add the Agent to Slack
+## Step 6: Sample Preview (do NOT skip)
 
-> ⚠️ Each SureThing Agent has its own dedicated Slack bot. You **must** use this Agent's bot to
-> send the report — not a bot from another Agent or Project.
+Before setting up the scheduled task, show the user the full formatted report in chat:
 
-**Complete setup flow**:
+- Date range covered
+- All 5 sections rendered as Slack code blocks
+- Ask: "Report look good? If yes, I'll set up the daily cron and start posting to your Slack channel."
 
-1. In SureThing, find the **"Add to Slack"** button in the right-side Agent settings panel.
-   Click it and complete the OAuth flow to install this Agent's bot into the target Slack workspace.
-
-2. In Slack, go to the target channel and run:
-   ```
-   /invite @<bot_name>
-   ```
-
-3. After the bot joins, SureThing auto-fires a welcome task — the bot posts an intro message to
-   the channel. This also confirms you have the right bot.
-
-4. **Get the integration_id**:
-   Call `slack_channels(operation="list")`. Find the entry for the workspace you just connected.
-   Record its `integration_id` (a UUID).
-
-   **Get the Channel ID**:
-   In Slack, right-click the channel name → Copy Link. The ID is the `C`-prefixed string at the
-   end of the URL.
+Only proceed to Step 7 when user explicitly approves.
 
 ---
 
-## Step 6: Send the Report to Slack
+## Step 7: Send the Report to Slack
 
 Use the `slack_channels` tool — **not** Composio `SLACKBOT_*` or `SLACK_*` tools, which bypass
 the Agent's own bot and send from the wrong account:
@@ -355,15 +378,15 @@ the Agent's own bot and send from the wrong account:
 ```python
 slack_channels(
     operation      = "send",
-    channel_id     = "<CHANNEL_ID>",       # e.g. C0B438GTFQQ
-    integration_id = "<INTEGRATION_ID>",   # UUID from Step 5
+    channel_id     = "<CHANNEL_ID>",       # from Step 2
+    integration_id = "<INTEGRATION_ID>",   # from Step 2
     text           = "<report_body>"
 )
 ```
 
 ---
 
-## Step 7: Create the Scheduled Task
+## Step 8: Create the Scheduled Task
 
 Once manual verification passes, create a daily cron task:
 
@@ -402,7 +425,7 @@ task_manage(
 
 ---
 
-## Step 8: End-to-End Verification
+## Step 9: End-to-End Verification
 
 Manually trigger the task once immediately after creation, and confirm:
 
